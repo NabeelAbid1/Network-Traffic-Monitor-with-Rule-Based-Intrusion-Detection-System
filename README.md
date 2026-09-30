@@ -1,208 +1,237 @@
-# PathFinder
+# Network Traffic Monitor with Rule-Based Intrusion Detection System (NTM-IDS)
 
-A cybersecurity-focused DSA project that models a computer network as a **directed weighted graph** to simulate and analyze real-world attack paths between systems.
-
-> Inspired by **BloodHound** — the industry-standard attack-path analysis tool used by penetration testers and security teams worldwide.
+> **A C++ Data Structures & Algorithms project that inspects network traffic in real time and raises prioritized alerts using rule-based detection.**
 
 ---
 
 ## Project Overview
 
-PathFinder represents an entire computer network as a graph of relationships. **Hosts, users, services, and vulnerabilities become nodes.** Trust relationships, admin rights, credential reuse, and active sessions become weighted edges.
+**NTM-IDS** is a console-based application that simulates the core pipeline of a network Intrusion Detection System. Packets flow into a fixed-size buffer, are tracked per source IP, and are checked against a set of detection rules. Anything suspicious triggers an alert, and the most severe alerts are always reported first.
 
-Given an attacker's entry point and a high-value target, PathFinder finds every possible attack path — and ranks them by how easy they are to exploit.
+Unlike a typical "use the STL for everything" project, NTM-IDS is built around **choosing the right data structure and algorithm for each job**. Every component maps to a DSA concept, with its time complexity analysed and justified.
 
-This is **not** an exploitation or hacking tool. It is a simulation and analysis engine built entirely on custom-implemented data structures and graph algorithms — no libraries, no shortcuts.
+> Traffic is **simulated** (packet generator or CSV dataset). No real network sniffing is performed.
 
 ---
 
-## Attack Path Example
+## Key Features
+
+### 1. **Traffic Buffering**
+* **Circular Queue (FIFO):** Fixed-size array buffer that absorbs bursts of incoming packets with `O(1)` insert and delete.
+* **Overflow Policy:** When the buffer is full, the oldest packet is dropped and the drop is counted.
+
+### 2. **Flow Tracking**
+* **Hash Map Flow Table:** Keeps a live summary per source IP (packet count, timestamps, ports touched, SYN count, last seen).
+* **Collision Handling:** Separate chaining with linked lists.
+* **Auto-Resize:** Table doubles and rehashes when the load factor exceeds 0.75, giving `O(1)` amortized insertion.
+* **Flow Expiry:** Inactive entries are removed so spoofed-IP floods cannot exhaust memory.
+
+### 3. **Rule-Based Detection**
+
+| Rule | Detects | Technique |
+| :--- | :--- | :--- |
+| **IP Blacklist** | Traffic from banned hosts or whole subnets (`10.0.0.*`) | IP Trie |
+| **Signature Match** | Malicious payload strings (`DROP TABLE`, `/etc/passwd`) | Aho-Corasick |
+| **Flood / DoS** | Too many packets from one IP in T seconds | Sliding Window (deque) |
+| **Port Scan** | One IP touching many distinct ports | Hash Map + Set |
+| **SYN Flood** | Many SYN packets without matching ACKs | Flow Table counters |
+| **Port Rules** | Blocked port ranges | Sorted array + Binary Search |
+
+### 4. **Alert Management**
+* **Max-Heap Priority Queue:** Alerts are ordered by severity (1-3), so the most critical is always handled first.
+* **Alert Log:** Every alert is appended to a linked list and written to `data/alerts.log` with timestamp, source IP, rule name, and severity.
+
+### 5. **Reporting**
+* **Top-K Talkers:** Busiest source IPs using a min-heap of size K in `O(n log K)`.
+* **Summary Statistics:** Packets processed, dropped, alerts by severity, and unique IPs seen.
+
+---
+
+## Data Structures & Algorithms Used
+
+| Component | Data Structure / Algorithm | Time Complexity |
+| :--- | :--- | :--- |
+| Packet buffer | Circular Queue | `O(1)` enqueue / dequeue |
+| Flow table | Hash Map (chaining + rehashing) | `O(1)` average lookup |
+| Rate limiting | Sliding Window (deque) | `O(1)` amortized |
+| IP blacklist | Trie (prefix match) | `O(k)`, k = octets (max 4) |
+| Payload signatures | Aho-Corasick automaton | `O(N + z)` scan, N = payload length, z = matches |
+| Aho-Corasick build | Trie + BFS fail links | `O(total pattern length)` |
+| Port-range rules | Sorted array + Binary Search | `O(log M)` |
+| Alert ordering | Max-Heap | `O(log n)` push / pop |
+| Top-K talkers | Min-Heap of size K | `O(n log K)` |
+| Alert history | Linked List | `O(1)` append |
+
+---
+
+## How It Works
 
 ```
-Hacker Laptop ──(exploit, 2)──► Web Server ──(cred reuse, 3)──► Admin User
-                                                                      │
-                                                              (admin_to, 1)
-                                                                      ▼
-                  Laptop1 ◄──(has_session, 2)────────────── File Server
+Packet Source (generator / CSV)
+        |
+        v
+ [ Circular Queue ]  <- buffers bursts
+        |
+        v  (dequeue one packet)
+ [ Flow Table (Hash Map) ]  <- update per-IP counters
+        |
+        v
+ [ Rule Engine ]
+   |-- IP Trie            -> blacklisted?
+   |-- Sliding Window     -> too fast?
+   |-- Port / SYN checks  -> scan or flood?
+   '-- Aho-Corasick       -> malicious payload?
+        |
+        v  (rule fired)
+ [ Alert Max-Heap ]  -> most severe first
+        |
+        v
+ [ Alert Log (Linked List + file) ]
+```
 
-Total Cost: 8  |  Hops: 4  |  Found by: Dijkstra's Algorithm
+**Static vs dynamic structures**
+* **Built once at startup (read-only):** IP Trie and Aho-Corasick automaton, loaded from `rules/`.
+* **Change with every packet:** Circular Queue, Flow Table, Alert Heap, Alert Log.
+
+---
+
+## Packet Structure
+
+```cpp
+struct Packet {
+    string srcIP;
+    string dstIP;
+    int    srcPort;
+    int    dstPort;
+    string protocol;   // TCP / UDP / ICMP
+    string flags;      // SYN, ACK, ...
+    string payload;
+    int    timestamp;  // seconds
+};
 ```
 
 ---
 
-## Core Data Structures (Built from Scratch)
-
-| Structure | Role in PathFinder |
-|-----------|-------------------|
-| **Hash Table** | O(1) node lookup by ID — no linear searching |
-| **Graph (Adjacency List)** | Core network map — each node stores its outgoing edges |
-| **Queue** | Powers BFS — explores the network layer by layer |
-| **Stack** | Powers DFS — dives deep into a path before backtracking |
-| **Min-Heap** | Powers Dijkstra — always expands the cheapest path first |
-
----
-
-## Algorithms
-
-| Algorithm | Question it Answers | Why it Matters |
-|-----------|-------------------|----------------|
-| **BFS** | Is the target reachable? What's the minimum hops? | Catches any connection — even indirect ones humans miss |
-| **DFS** | What are *all* possible paths to the target? | Reveals every route an attacker could take |
-| **Dijkstra** | What is the *cheapest* (easiest) attack path? | Mimics real attacker logic — chain easy steps, avoid hard ones |
-
-> **Key insight:** BFS and Dijkstra intentionally disagree. BFS finds the *shortest* path (fewest hops). Dijkstra finds the *cheapest* path (lowest total cost). In security, these are rarely the same — and that difference is the whole point.
-
----
-
-## Graph Model
-
-**Node Types**
-- `HOST` — Physical or virtual machines (laptops, servers, domain controllers)
-- `USER` — Account identities with permissions and group memberships
-- `SERVICE` — Running services (RDP, SSH, HTTP, SMB)
-- `VULNERABILITY` — Known weaknesses with associated exploit difficulty
-
-**Edge Types (Relationships)**
-
-| Edge | Meaning | Typical Cost |
-|------|---------|-------------|
-| `admin_to` | Account has admin rights on a host | Low (1–2) |
-| `has_session` | Active login session exists | Low–Medium (2–3) |
-| `credential_reuse` | Password found here works elsewhere | Medium (3–4) |
-| `exploits_vuln` | Known vulnerability can be exploited | Medium–High (3–8) |
-| `connects_to` | Network-level connectivity | Varies |
-
----
-
-## DSA Concepts Applied
-
-| Concept | Implementation |
-|---------|---------------|
-| **Directed Weighted Graph** | Network relationships have direction and exploit difficulty cost |
-| **Hash Table (Chaining)** | Node registry — resolves collisions via linked lists |
-| **Min-Heap (Priority Queue)** | Dijkstra's frontier — always processes lowest-cost node next |
-| **Adjacency List** | Memory-efficient graph storage for sparse security graphs |
-| **BFS (Level-order traversal)** | Reachability analysis and hop-count minimization |
-| **DFS (Backtracking)** | Full path enumeration and cycle detection in trust chains |
-
----
-
-## Input Format
-
-Network data is loaded from a **JSON file — not hardcoded.** Swap the file, get a different network. No code changes required.
-
-```json
-{
-  "nodes": [
-    { "id": "HL",         "type": "HOST", "label": "Hacker Laptop",   "risk": 1 },
-    { "id": "WebServer",  "type": "HOST", "label": "Web Server",       "risk": 3 },
-    { "id": "AdminUser",  "type": "USER", "label": "Admin Account",    "risk": 4 },
-    { "id": "L1",         "type": "HOST", "label": "Laptop1",          "risk": 5 }
-  ],
-  "edges": [
-    { "from": "HL",        "to": "WebServer", "type": "exploits_vuln",     "cost": 2 },
-    { "from": "WebServer", "to": "AdminUser", "type": "credential_reuse",  "cost": 3 },
-    { "from": "AdminUser", "to": "L1",        "type": "admin_to",          "cost": 1 }
-  ]
-}
-```
-
----
-
-## Project Structure
+## Project Directory Structure
 
 ```
-PathFinder/
+NTM-IDS/
 ├── src/
-│   ├── data_structures/   # HashTable, Graph, Queue, Stack, MinHeap
-│   ├── algorithms/        # BFS, DFS, Dijkstra
-│   ├── models/            # Node and Edge class definitions
-│   └── utils/             # JSON loader, path printer, helpers
+│   ├── main.cpp             # Entry point & monitor loop
+│   ├── Packet.h             # Packet struct & parser
+│   ├── CircularQueue.h      # Fixed-size packet buffer
+│   ├── FlowTable.h          # Hash map with chaining & resize
+│   ├── IPTrie.h             # Blacklist trie
+│   ├── AhoCorasick.h        # Signature matching automaton
+│   ├── RuleEngine.h         # Combines all detection rules
+│   ├── AlertHeap.h          # Severity-ordered priority queue
+│   └── Logger.h             # Alert log (linked list + file)
+├── rules/
+│   ├── blacklist.txt        # Banned IPs / subnets
+│   └── signatures.txt       # Malicious payload strings
 ├── data/
-│   ├── small_network.json     # 5-node basic scenario
-│   ├── medium_network.json    # Multi-path scenario (BFS vs Dijkstra disagree)
-│   └── tricky_network.json    # Dead ends, cycles, no-path cases
-├── tests/                 # Unit tests per data structure and algorithm
-├── docs/                  # Design diagrams and notes
+│   ├── packets.csv          # Simulated traffic
+│   └── alerts.log           # Output alerts
+├── .gitignore
 └── README.md
 ```
 
 ---
 
-## Demo Workflow
+## Sample Rule Files
 
+**`rules/blacklist.txt`**
 ```
-1. Load network from JSON
-2. Display all nodes and edges
-3. Select: Start Node → Target Node
-4. Run BFS   → "Fewest hops path: HL → WebServer → AdminUser → L1  (3 hops)"
-5. Run DFS   → "All paths found: 2 total paths to L1"
-6. Run Dijkstra → "Cheapest path: HL → WebServer → AdminUser → L1  (cost: 6)"
-7. Live edit: add new node to JSON → rerun → new paths appear instantly
+6.6.6.6
+192.168.1.5
+10.0.0.*
 ```
 
----
-
-## Key Design Decisions
-
-✓ **No external graph libraries** — every structure coded from scratch  
-✓ **Directed edges** — `A → B` does not imply `B → A`  
-✓ **Weighted edges** — fewer hops ≠ easier path (Dijkstra vs BFS)  
-✓ **JSON-driven input** — fully dynamic, not hardcoded  
-✓ **Multiple test scenarios** — edge cases built into demo data  
+**`rules/signatures.txt`**
+```
+DROP TABLE
+/etc/passwd
+<script>
+```
 
 ---
 
-## Status
+## Sample Output
 
-- [x] Project structure set up
-- [ ] Hash Table implemented
-- [ ] Graph (Adjacency List) implemented
-- [ ] Queue and Stack implemented
-- [ ] Min-Heap implemented
-- [ ] BFS implemented
-- [ ] DFS implemented
-- [ ] Dijkstra implemented
-- [ ] JSON loader
-- [ ] CLI interface
-- [ ] Demo scenarios (small / medium / tricky)
-- [ ] Path visualization (stretch goal)
+```
+[SEVERITY 3] 12:00:02  Blacklisted IP 6.6.6.6
+[SEVERITY 3] 12:00:05  Flood detected from 10.0.0.5 (50 packets / 2s)
+[SEVERITY 2] 12:00:03  Signature 'DROP TABLE' from 1.1.1.1
+[SEVERITY 2] 12:00:07  Port scan from 172.16.0.9 (23 ports / 5s)
 
----
-
-## Future Enhancements
-
-- Nmap XML import — parse real network scan output into the graph
-- Visual graph rendering — highlight attack path in color
-- "Most critical node" analysis — which node, if removed, breaks the most paths
-- Risk scoring per path — composite score beyond just edge cost
+--- SUMMARY ---
+Packets processed : 10000
+Packets dropped   : 0
+Unique IPs        : 214
+Alerts            : 4
+Top talkers       : 10.0.0.5 (312), 172.16.0.9 (188), ...
+```
 
 ---
 
 ## Technical Stack
 
-- **Language:** C++
-- **Paradigm:** Data Structures & Algorithms — all implemented manually
-- **Input:** JSON
-- **Interface:** Console CLI (menu-driven)
-- **Visualization:** *(Stretch — matplotlib / networkx)*
+* **Language:** C++ (C++11 or later)
+* **Paradigm:** Data Structures & Algorithms, with custom implementations of the core structures
+* **Data Input:** Simulated packets (`.csv`) and rule files (`.txt`)
+* **Interface:** Console-Based CLI
+* **Build:** `g++ -std=c++11 src/main.cpp -o ntm_ids`
+
+---
+
+## Key Design Decisions
+
+✓ **Circular queue over `std::queue`**: fixed memory and `O(1)` operations, implemented from scratch  
+✓ **Aho-Corasick over naive search**: one pass over the payload regardless of signature count  
+✓ **Trie over a list scan**: lookup cost depends on IP length, not on the number of rules  
+✓ **Rehashing + flow expiry**: keeps the flow table fast and memory-bounded under spoofed-IP floods  
+✓ **Heap for alerts**: critical threats surface first, not in arrival order  
+
+---
+
+## Limitations
+
+* Traffic is simulated; no live packet capture
+* Signature matching is exact-string (no regex)
+* Detection thresholds (e.g. flood limit, scan limit) are fixed constants
+* Single-threaded processing
+
+---
+
+## Future Enhancements
+
+- [ ] Live packet capture using libpcap / Npcap
+- [ ] Bit-level trie for exact CIDR subnet masks (`/24`, `/16`)
+- [ ] Regex-based signatures
+- [ ] Configurable thresholds from a config file
+- [ ] Multi-threaded producer-consumer pipeline
+- [ ] Graph analysis of host connections for lateral-movement detection
+- [ ] GUI dashboard for live alerts
+- [ ] Export reports as PDF / CSV
+
+---
+
+## License
+
+This project is provided as-is for educational purposes in demonstrating Data Structures and Algorithms in C++.
 
 ---
 
 ## Author
 
-**Nabeel Abid**  
-GitHub:[@NabeelAbid1](https://github.com/NabeelAbid1)
-
-**Sheraz Ali**  
-GitHub: [@Sheraz-Ali403](https://github.com/Sheraz-Ali403)
+**Your Name**  
+GitHub: [@your-username](https://github.com/your-username)
 
 ---
 
-## Not a Hacking Tool
+## Notes
 
-PathFinder is an **analysis and simulation tool only.** It operates on static JSON data you define. It performs no live network scanning, no exploitation, and no unauthorized access of any kind.
-
----
-
-*Built as a semester DSA project — a simplified implementation of concepts used by real tools like [BloodHound](https://github.com/BloodHoundAD/BloodHound) by SpecterOps.*
+- All timestamps follow the format: `YYYY-MM-DD HH:MM:SS`
+- Detection thresholds are constants defined in `RuleEngine.h`
+- File paths are relative to the working directory where the executable is run
+-
