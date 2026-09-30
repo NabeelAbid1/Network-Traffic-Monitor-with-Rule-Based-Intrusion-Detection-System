@@ -224,8 +224,12 @@ This project is provided as-is for educational purposes in demonstrating Data St
 
 ## Author
 
-**Your Name**  
-GitHub: [@your-username](https://github.com/your-username)
+**Nabeel Abid**  
+GitHub:[@NabeelAbid1](https://github.com/NabeelAbid1)
+
+**Sheraz Ali**  
+GitHub: [@Sheraz-Ali403](https://github.com/Sheraz-Ali403)
+
 
 ---
 
